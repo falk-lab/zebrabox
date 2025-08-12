@@ -18,6 +18,7 @@ library(plotly)
 library(tidyr)
 library(tibble)
 library(ggbeeswarm)
+library(purrr)
 options(shiny.maxRequestSize = 30*1024^2)
 
 ui <- page_sidebar(
