@@ -5,6 +5,7 @@
 #
 # ZEBRA APP
 
+
 library(shiny)
 library(bslib)
 library(vroom)
@@ -16,6 +17,7 @@ library(writexl)
 library(DT)
 library(plotly)
 library(tidyr)
+library(purrr)
 library(tibble)
 library(ggbeeswarm)
 library(purrr)
@@ -24,49 +26,50 @@ options(shiny.maxRequestSize = 30*1024^2)
 ui <- page_sidebar(
   title = "ZebraBox Activity Analysis",
   sidebar = sidebar(
-    fileInput("data_file", "Upload Data:"),
-    fileInput("metadata_file", "Upload Metadata:"),
+    fileInput("data_file", "Upload Data (.xls only):",
+              accept = c(".xls")),
+    
+    fileInput("metadata_file", "Upload Metadata (.xlsx only):",
+              accept = c(".xlsx")),
+    
     downloadButton("download_template", "Download metadata template", class = "btn btn-secondary btn-md"),
     textInput("metadata_order", "(optional) Specify metadata order:"),
-    actionButton("run", "Run", class = "btn btn-primary btn-lg")
+    actionButton("run", "Run", class = "btn btn-primary btn-lg"),
+    
+    conditionalPanel(
+      condition = "input.run > 0",
+      br(),
+      downloadButton("download_report", "Download Report", class = "btn btn-secondary btn-md")
+    )
   ),
   
-  card(
+  div(
+    style = "width: 100%; padding: 15px;",
+    
     conditionalPanel(
       condition = "input.run == 0",
-      tags$h5("Please upload your data and click Run to begin.")
+      tags$h5("Upload your Zebrabox data file (CSV or Excel) using the file upload button, then click Run to process and view your analysis results. Use the download buttons to save any generated tables or plots.")
     ),
     
     conditionalPanel(
       condition = "input.run > 0",
-      fluidRow(
-        column(
-          width = 3,
-          card(
-            downloadButton("download_report", "Download Report", class = "btn-sm mb-2"),
-            downloadButton("download_data", "Download Data", class = "btn-sm")
-          )
-        ),
-        column(
-          width = 9,
-          navset_card_underline(
-            nav_panel("All Fish by Minute", plotlyOutput("all_fish_by_minute")),
-            nav_panel("Condition Summary", plotlyOutput("condition_summary")),
-            nav_panel("Plate Map / Well Activity", plotlyOutput("plate_map")),
-            nav_panel("Mean Activity", plotOutput("mean_activity")),
-            nav_panel("Percent Change Plot", plotlyOutput("percent_change_plot")),
-            nav_panel("Percent Change Table", DTOutput("percent_change_table")),
-            nav_panel("Percent Change by Period Plot", plotlyOutput("percent_change_by_period_plot")),
-            nav_panel("Percent Change by Period Table", DTOutput ("percent_change_by_period_table")),
-            nav_panel("Activity by Period", plotlyOutput("activity_by_period")),
-            nav_panel("Statistical Summary", DTOutput("stats_table")),
-            nav_panel("Cleaned Data", DTOutput("cleaned_table")),
-            nav_panel("Peak Height Table", DTOutput("peak_height_table")),
-            nav_panel("Peak Height Plot", plotlyOutput("peak_height_plot")),
-            nav_panel("Pre-Peak Activity Slope", plotlyOutput("starting_slope_plot")),
-            nav_panel("Post-Peak Activity Slope", plotlyOutput("ending_slope_plot"))
-          )
-        )
+      width = 9,
+      navset_card_underline(
+        nav_panel("All Fish by Minute", plotlyOutput("all_fish_by_minute")),
+        nav_panel("Condition Summary", plotlyOutput("condition_summary")),
+        nav_panel("Plate Map / Well Activity", plotlyOutput("plate_map")),
+        nav_panel("Mean Activity", plotOutput("mean_activity")),
+        nav_panel("Percent Change Plot", plotlyOutput("percent_change_plot")),
+        nav_panel("Percent Change Table", DTOutput("percent_change_table")),
+        nav_panel("Percent Change by Period Plot", plotlyOutput("percent_change_by_period_plot")),
+        nav_panel("Percent Change by Period Table", DTOutput ("percent_change_by_period_table")),
+        nav_panel("Activity by Period", plotlyOutput("activity_by_period")),
+        nav_panel("Statistical Summary", DTOutput("stats_table")),
+        nav_panel("Cleaned Data", DTOutput("cleaned_table")),
+        nav_panel("Peak Height Table", DTOutput("peak_height_table")),
+        nav_panel("Peak Height Plot", plotlyOutput("peak_height_plot")),
+        nav_panel("Pre-Peak Activity Slope", plotlyOutput("starting_slope_plot")),
+        nav_panel("Post-Peak Activity Slope", plotlyOutput("ending_slope_plot"))
       )
     )
   ),
@@ -87,7 +90,8 @@ server <- function(input, output, session) {
   control_group <- "WT"
   
   metadata <- reactive({
-    readxl::read_excel("../2025-07-10_simulated_metadata.xlsx", skip = 1) %>%
+    req(input$metadata_file)
+    readxl::read_excel(input$metadata_file$datapath, skip = 1) %>%
       mutate(box_used = as.character(box_used),
              box_used = case_when(box_used == '1' ~ 'LocA',
                                   box_used == '2' ~ 'LocB',
@@ -96,15 +100,21 @@ server <- function(input, output, session) {
   
   # Reactive expression for main data (zebrabox_data)
   zebrabox_data <- reactive({
-    readr::read_tsv("../simulated_zebrabox_data2.tsv") %>% 
+    req(input$data_file)
+    # readr::read_tsv(input$data_file$datapath) %>%
+    read.delim(input$data_file$datapath, 
+               fileEncoding = "UTF-16LE", stringsAsFactors = F) %>%
       mutate(time_min = start / 60,
-             period2 = ifelse(time_min < 10, 1, floor(time_min / 10) + 1),
+             experiment_time_of_day = '',
+             period2 = ifelse(nchar(time_min) == 1, 1,
+                              as.integer(str_extract(time_min, '^[0-9]')) + 1),
              plate = str_extract(location, 'Loc[AB]'),
-             light = ifelse(period2 %% 2 != 0 & period2 != 1,
-                            'dark', 'light')) %>%
-      rename(activity = actinteg) %>%
+             light = ifelse(period2 %% 2 != 0 & period2 != 1, 'dark', 'light')) %>%
       separate(aname, into = c('well', 'name'), sep = '_') %>%
-      left_join(metadata(), by = join_by(well, plate == box_used))
+      left_join(metadata(), by = join_by(well, plate == box_used)) %>%
+      select(plate, treatment, well, time_min, light, period,
+             datatype, activity = actinteg, everything()) %>%
+      filter(!is.na(treatment), timebinid == 1)
   })
   
   output$cleaned_table <- renderDT({
@@ -213,8 +223,8 @@ server <- function(input, output, session) {
   
   output$percent_change_by_period_plot <- renderPlotly({
     zebrabox_data() %>%
-      filter(datatype == 'QuantizationSum', !is.na(activity),
-             treatment == control_group) %>%
+      filter(datatype == 'QuantizationSum', !is.na(activity)) %>%
+      # treatment == control_group) %>%
       mutate(period3 = ifelse(period2 %in% 1:2, 
                               'acclimation', as.character(period2)),
              period3 = factor(period3, levels = c('acclimation', '3', '4', '5', 
@@ -253,21 +263,21 @@ server <- function(input, output, session) {
   
   output$percent_change_by_period_table <- renderDT({
     zebrabox_data() %>%
-      filter(datatype == 'QuantizationSum', !is.na(activity),
-             treatment == control_group) %>%
-      mutate(period3 = ifelse(period2 %in% 1:2, 
+      filter(datatype == 'QuantizationSum', !is.na(activity)) %>%
+      # treatment == control_group) #%>%
+      mutate(period3 = ifelse(period2 %in% 1:2,
                               'acclimation', as.character(period2)),
-             period3 = factor(period3, levels = c('acclimation', '3', '4', '5', 
-                                                  '6', '7', '8', '9', '10'))) %>% 
+             period3 = factor(period3, levels = c('acclimation', '3', '4', '5',
+                                                  '6', '7', '8', '9', '10'))) %>%
       group_by(period3) %>%
       summarize(unique_name = median(activity)) %>%
       ungroup() -> median_cycle_activity
     
     zebrabox_data() %>%
       filter(datatype == 'QuantizationSum', !is.na(activity)) %>%
-      mutate(period3 = ifelse(period2 %in% 1:2, 
+      mutate(period3 = ifelse(period2 %in% 1:2,
                               'acclimation', as.character(period2)),
-             period3 = factor(period3, levels = c('acclimation', '3', '4', '5', 
+             period3 = factor(period3, levels = c('acclimation', '3', '4', '5',
                                                   '6', '7', '8', '9', '10'))) %>%
       left_join(median_cycle_activity, by = join_by(period3)) %>%
       mutate(percent_change = ((activity - unique_name) / unique_name) * 100) %>%
@@ -310,13 +320,16 @@ server <- function(input, output, session) {
   output$percent_change_plot <- renderPlotly({
     zebrabox_data() %>%
       filter(datatype == 'QuantizationSum', !is.na(activity),
-             strain == control_group, light == 'dark') %>%
-      summarize(median(activity)) %>%
-      deframe() -> median_activity
+             # strain == control_group,
+             light == 'dark') %>%
+      group_by(plate) %>%
+      summarize(median_activity = median(activity)) %>%
+      ungroup() -> median_activity
     
     
     zebrabox_data() %>%
       filter(datatype == 'QuantizationSum', !is.na(activity)) %>%
+      left_join(median_activity, by = join_by(plate)) %>%
       mutate(percent_change = ((activity - median_activity) / median_activity) * 100) %>%
       group_by(treatment, light, well) %>%
       summarize(mean_activity = mean(percent_change)) %>%
@@ -325,7 +338,7 @@ server <- function(input, output, session) {
       ggplot(aes(x = treatment, y = mean_activity)) +
       ggbeeswarm::geom_quasirandom() +
       geom_boxplot(alpha = 0) +
-      labs(x = 'Condition', 
+      labs(x = 'Condition',
            y = 'Average Percent Change From Control Median\nin Dark Cycles',
            title = 'Percent Change Activity') +
       theme_bw()
@@ -537,10 +550,33 @@ server <- function(input, output, session) {
       facet_wrap(~ treatment) +
       theme_bw()
   })
+  
+  output$download_report <- downloadHandler(
+    filename = function() {
+      paste0("ZebraBox_Report_", Sys.Date(), ".html")
+    },
+    content = function(file) {
+      tempReport <- file.path(tempdir(), "report.Rmd")
+      file.copy("report.Rmd", tempReport, overwrite = TRUE)
+      
+      params <- list(
+        metadata_file = input$metadata_file$datapath,
+        data_file     = input$data_file$datapath
+      )
+      
+      rmarkdown::render(
+        tempReport,
+        output_file = file,
+        params = params,
+        envir = new.env(parent = globalenv())
+      )
+    }
+  )
 }
 
 
 shinyApp(ui, server)
+
 
 
 
